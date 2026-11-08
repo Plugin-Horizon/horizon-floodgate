@@ -1,0 +1,18 @@
+[package]
+name = "horizon-floodgate-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Floodgate's backend part for Horizon: reads the Bedrock data a Floodgate proxy forwards"
+
+[dependencies]
+base64 = "0.22"
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+# The form JSON and the Global API's answers.
+serde_json = "1"
+# The Global API (Global Linking, gamertag/XUID lookups), as Horizon's other crates use it.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# Own linking's database (Floodgate's SQLite implementation); Horizon's mod deps carry it as feature `sqlite`.
+rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
