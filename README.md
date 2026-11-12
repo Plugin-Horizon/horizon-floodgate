@@ -1,9 +1,9 @@
 # horizon-floodgate
 
-> **Unofficial Rust port of Floodgate for the Horizon server (https://github.com/horizon-rust/horizon). Not affiliated with or endorsed by the Floodgate authors.**
+> **Unofficial Rust port of Floodgate for the Horizon server (https://github.com/arismoko/horizon). Not affiliated with or endorsed by the Floodgate authors.**
 
 The backend part of [Floodgate](https://github.com/GeyserMC/Floodgate) as a native mod for
-[Horizon](https://github.com/horizon-rust/horizon) servers. Not affiliated with GeyserMC or Floodgate.
+[Horizon](https://github.com/arismoko/horizon) servers. Not affiliated with GeyserMC or Floodgate.
 
 Bedrock players join a Java network through Geyser and a proxy that runs Floodgate. With
 `send-floodgate-data: true` the proxy puts each Bedrock player's data, encrypted with the proxy's Floodgate key,
@@ -40,6 +40,16 @@ The player's name (`.` + Bedrock name, or the linked Java name) and UUID (`00000
 proxy's Velocity modern forwarding, which Horizon already reads. The mod never changes them, as Floodgate doesn't on a
 backend with proxy data.
 
+> **Built for and working only with [arismoko/horizon](https://github.com/arismoko/horizon)** (the Horizon fork that carries the mod API). [horizon-rust/horizon](https://github.com/horizon-rust/horizon) is experimental for mods and not supported: the earlier version for its native hooks / horizon-mixins is frozen on the `horizon-plain` branch (work stopped on 2026-11-12).
+
+## Which Horizon
+
+This is a native trait mod: `horizon-mod.toml`, a `Cargo.toml` that depends on `horizon-mod-api`, `src/lib.rs` with the hooks, and the plugin logic in the `core/` crate (plain Rust, no engine needed for its tests).
+
+- Pin: `[native] horizon = "54090ee36c4e2c7b43b66db864220c577b94b7e0"` in `horizon-mod.toml` (game `26.3`). That is a development build of arismoko/horizon `main` plus mod API additions that are not all merged upstream yet, so a stock `main` may lack some host methods this mod calls until they land.
+- It compiled and loaded on that build and was smoke-tested there; it has not seen a long run with real players. Treat it as experimental.
+- Feature descriptions below were written for the earlier horizon-rust version; where they name engine calls (`native_*`) or old file paths, read them as descriptions only. The Known gaps list is current.
+
 ## Config
 
 `config/floodgate/config.toml` in the server folder, written with the defaults on the first login when missing.
@@ -66,70 +76,20 @@ affected. The key is read once: restart the server after changing it. Unlike Flo
 
 ## Build
 
-A [horizon-mixins](https://github.com/horizon-rust/horizon) bundle: this folder is the bundle (`horizon-mixin.toml`,
-`helpers/`, the crate `core/`). Put it in a mods folder and build Horizon with it:
+Build it as a native trait mod with arismoko's launcher (see the "native mods" how-to in the arismoko/horizon docs):
 
 ```sh
-horizon-mixins apply --workspace <horizon source> --mods <mods folder> --out <stage>
-cd <stage> && cargo build --profile fast -p horizon-client --no-default-features
-cd <stage> && cargo test -p horizon-floodgate-core            # the crate's tests
+horizon-launcher native-build <path to this folder> --server-output <dir> --version <tag> --trust-native-code
 ```
 
-Tested on Horizon `69fab597a6f0e8a6ce524d38d1b73e599e343034` (native hooks API 411). The crate uses only `ring`,
-`base64`, `serde` and `toml` from Horizon's `Cargo.lock`.
+`--trust-native-code` is your consent to compile and run this code inside the server. The logic crate tests run without the engine: `(cd core && cargo test)`.
 
-## How it hooks in
+## Known gaps
 
-All but one injection use the hooks of Horizon's `hooks-all` branch (`fce1fb23d`, not merged upstream yet):
+What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: ...)` in `src/lib.rs`):
 
-| Injection | Target | Why |
-|---|---|---|
-| `handshake` (HEAD) | hooks-all `lan::conn::native_handshake` | decrypts the host's Floodgate data, puts the plain hostname back, refuses wrong data with Floodgate's message (no lookup here: the hook must not block) |
-| `long-host` (HEAD, cancellable, raw) | `buf::Reader::string` | without forwarding (Geyser straight to this server), reads the handshake host with 32767 instead of 255; hooks-all already does that with forwarding on |
-| `pre-login` (HEAD) | hooks-all `lan::conn::native_player_pre_login` | Global Linking lookup and `require-link` (a refusal goes back on `defer`) |
-| `profile` (HEAD) | hooks-all `lan::conn::native_player_profile` | the admitted Bedrock player becomes a Floodgate player |
-| `payload` (HEAD) | hooks-all `native_custom_payload_from_client` | a player's `floodgate:*` payload |
-| `tick` (HEAD) | `native_server_tick` | twice a tick: `minecraft:register` and queued payloads (`native_send_custom_payload_to_player`), uploaded skins (`native_set_profile_property` + `native_refresh_player`), kicks (vanilla `/kick`) |
-| `logged-out` | hook point `player_logged_out` v1 | forgets the player, closes their forms |
-| `register`, `perform` | hook points `register_commands` v1, `perform_command` v1 | the commands |
-| module `api` | `horizon_client::floodgate` | the crate's API for the game's code (the crate itself is a dependency of `horizon-client-lib`) |
-
-The handshake, pre-login and profile hooks run on the same connection thread, in that order, so the outcome is
-handed over in a thread-local. `on_connection`/`peek_handshake` are no longer called by the glue and stay only for
-their tests.
-
-## Tests
-
-- `cargo test -p horizon-floodgate-core`: the cipher, the data format, the checks and the handshake reader, plus
-  `tests/interop.rs`: data that GeyserMC's own classes (Floodgate 2.2.5) encrypted, with a throwaway test key
-  (`core/tests/test-key.bin`, protects nothing). `tools/Interop.java` made it, and reads what the crate encrypts.
-- `tools/probe.py`: synthetic Bedrock logins, as Geyser into a Velocity proxy with Floodgate, or as a Floodgate proxy
-  (with Velocity modern forwarding signed by a test secret) straight into the server.
-
-## Not done or untested
-
-The plugin channels, forms, linking, commands and API calls (branch `b-features`) were written without a build of
-the engine and without a server: only the crate's unit tests ran. The glue (`helpers/*.rs`) has not been compiled.
-
-- Skins: a skin Geyser uploads after the join (`floodgate:skin`) is kept (`uploaded_skin`) and applied to the
-  online player with hooks-all's `native_set_profile_property` + `native_refresh_player` (untested). Floodgate's skin upload service (a TLS websocket to GeyserMC) and the lookup of a
-  linked player's Java skin are not ported. The skin the proxy forwards at login comes through Velocity forwarding.
-- Own linking (`enable-own-linking`): SQLite only (`rusqlite`, Horizon's `sqlite` feature), written 2026-11-08 and tested
-  on its own (`store.rs`, `commands.rs`): a Java player runs `/linkaccount <bedrock name>` and gets a four-digit code, the
-  Bedrock player runs `/linkaccount <java name> <code>` and is disconnected to join again as the linked account;
-  `/unlinkaccount` removes it. A login looks in the database first, then at Global Linking. MySQL and MongoDB are not
-  ported. The table layout and all texts are guesses.
-- `/fwhitelist` (needs a helper that adds a profile to the whitelist), `/floodgate firewall`, metrics, news, the
-  update check, the API's events and `getPlayerLink`'s write calls.
-- Texts: Floodgate's translated texts (`floodgate.core.not_linked`, the command answers) come from GeyserMC's
-  translation repository, which has no licence, so they were not read; this port's own English wording is used.
-  Players are not answered in their own language.
-- Forms: Gson escapes `<`, `>`, `&`, `=` and `'` in the JSON as `\u003c` and so on; this port writes them as they
-  are (the same JSON value). Not tried with a Bedrock client.
-- Floodgate also sets the connection's address to the Bedrock client's address; behind Velocity forwarding the
-  forwarded address wins on Paper too, so the mod leaves it.
-- Tested with a real Velocity 4.3.1 with Floodgate 2.2.5 and synthetic clients only, not with Geyser and a Bedrock
-  client.
+- The Floodgate handshake is not read, so a Bedrock player is not a Floodgate player yet: no key check, no forms.
+- Global Linking lookups are not done (a web request would block the tick), so `require-link` is not enforced with Global Linking on.
 
 ## Licence
 
@@ -151,7 +111,3 @@ For the plugin channels, linking and commands (2026-11-06) these were read as we
 `config.yml`; and from GeyserMC's Cumulus 1.1.2 (MIT, the version Floodgate uses, commit `496d5572`): the form types,
 the three codecs, `FormCodecImpl`, `FormImageAdaptor` and the component classes. GeyserMC's translation repository
 (`GeyserMC/languages`) has no licence and was not read.
-
-## Contributing
-
-Pull requests and improvements are always welcome! Open an issue or a PR -- direct pushes to main are disabled, every change goes through review.

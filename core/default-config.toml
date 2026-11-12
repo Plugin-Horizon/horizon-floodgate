@@ -26,4 +26,4 @@ allowed = true
 link-code-timeout = 300
 type = "sqlite"
 # Look up links the proxy did not send at GeyserMC's Global Linking API (api.geysermc.org).
-enable-global-linking = true
+enable-global-linking = false
