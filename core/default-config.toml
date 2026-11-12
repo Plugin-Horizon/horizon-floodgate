@@ -1,0 +1,29 @@
+# horizon-floodgate: the backend part of Floodgate for a Horizon server behind a Floodgate proxy.
+# Bedrock players' data comes encrypted from the proxy. This server needs the same key as the proxy:
+# copy the proxy's key file into this folder (config/floodgate/) and restart the server.
+key-file-name = "key.pem"
+
+# The prefix the proxy puts before Bedrock names, and whether spaces in them become '_'.
+# Behind a proxy the name a player joins with comes from the proxy; these two only shape the name
+# this mod reports for a Bedrock player. Keep them as the proxy has them.
+username-prefix = "."
+replace-spaces = true
+
+[disconnect]
+# The message a player gets whose data was encrypted with another key.
+invalid-key = "Please connect through the official Geyser"
+# The message a player gets whose data has the wrong number of fields (an old Geyser).
+invalid-arguments-length = "Expected {} arguments, got {}. Is Geyser up-to-date?"
+
+[player-link]
+# Whether linking is on at all. Off, even links the proxy sends are still kept, but nothing is looked up.
+enabled = true
+# Refuse Bedrock players without a linked Java account.
+require-link = false
+# Floodgate's own linking database is not ported: with this on and global linking off, linking is disabled.
+enable-own-linking = false
+allowed = true
+link-code-timeout = 300
+type = "sqlite"
+# Look up links the proxy did not send at GeyserMC's Global Linking API (api.geysermc.org).
+enable-global-linking = false
