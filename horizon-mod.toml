@@ -2,7 +2,7 @@ id = "floodgate"
 name = "Floodgate"
 version = "0.1.0"
 description = "Floodgate's backend part for a Floodgate proxy: Bedrock player data, /floodgate, /linkaccount, /unlinkaccount. Partial on arismoko, see PORT_NOTES.md."
-authors = ["CoreSMP"]
+authors = ["Plugin-Horizon contributors"]
 api = "0.2"
 capabilities = ["registries"]
 
