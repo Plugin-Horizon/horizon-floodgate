@@ -40,6 +40,13 @@ fn log(level: &str, line: &str) {
     eprintln!("[{level}] [floodgate] {line}");
 }
 
+/// A reply in legacy colour codes (`§`), read as the engine draws them (`host.text_from_legacy`, as the
+/// SkinsRestorer port does). A line the host refuses keeps its words, codes included.
+fn legacy_text(host: &dyn ServerHost, line: &str) -> Text {
+    host.text_from_legacy(line)
+        .unwrap_or_else(|_| Text::literal(line.to_owned()))
+}
+
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
     /// The four Floodgate channels (form, packet, skin, transfer) as raw play channels, each with the inbox.
@@ -111,14 +118,19 @@ impl Hooks for Mod {
         else {
             return Flow::Continue;
         };
-        let level = player.permission_level(&*host).unwrap_or(0);
+        let mut level = player.permission_level(&*host).unwrap_or(0);
+        // Audit 2026-11-14: a granted `floodgate.command.floodgate.version` node must pass the level check
+        // in the core's `run` (it only compares levels), as the engine tree already does for the node.
+        if player.permission_value(&*host, "floodgate.command.floodgate.version") == Some(true) {
+            level = level.max(fg::commands::OP_LEVEL);
+        }
         let sender = Sender {
             level,
             uuid: event.player,
             name: event.name.to_string(),
         };
         if let Some(lines) = run(event.command, Some(&sender), &config.player_link) {
-            event.replies.extend(lines.into_iter().map(Text::literal));
+            event.replies.extend(lines.iter().map(|line| legacy_text(&*host, line)));
             return Flow::Cancel;
         }
         Flow::Continue
