@@ -96,7 +96,7 @@ What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: .
 Derived from [Floodgate](https://github.com/GeyserMC/Floodgate) (https://github.com/GeyserMC/Floodgate, MIT).
 
 NOTICE (original copyright holders): Copyright (c) 2019-2022 GeyserMC (Floodgate and the Floodgate classes in
-Geyser's `common` module; the MIT notice is reproduced in LICENSE). The port's own text: Copyright (c) 2026 Detimes.
+Geyser's `common` module; the MIT notice is reproduced in LICENSE). The port's own text: Copyright (c) 2026 LionSpacer.
 
 MIT, see [LICENSE](LICENSE). Floodgate and the Floodgate classes in Geyser's `common` module are MIT (checked
 2026-11-06), so their source was read: the data format, the cipher layout and the order of the checks follow
