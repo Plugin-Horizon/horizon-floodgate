@@ -9,7 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::forms::{parse_response, Form, Response};
+use crate::horizon_floodgate_core::forms::{parse_response, Form, Response};
 
 pub const FORM: &str = "floodgate:form";
 pub const PACKET: &str = "floodgate:packet";
@@ -54,7 +54,7 @@ pub struct Skin {
 /// `SkinChannel.handleServerCall`: `value\0signature`, exactly two parts (Java's split).
 pub fn parse_skin(data: &[u8]) -> Option<Skin> {
     let text = String::from_utf8_lossy(data);
-    let parts = crate::data::java_split(&text, '\0');
+    let parts = crate::horizon_floodgate_core::data::java_split(&text, '\0');
     match parts[..] {
         [value, signature] => Some(Skin {
             value: value.into(),
@@ -281,7 +281,7 @@ fn answer(answers: Vec<(Callback, u128, Response)>) {
 
 /// `FloodgateApi.sendForm`: does nothing for a player who is not a Floodgate player, as Floodgate.
 pub fn send_form(player: u128, form: Form, callback: Option<Callback>) -> bool {
-    if crate::player(player).is_some() {
+    if crate::horizon_floodgate_core::player(player).is_some() {
         with(|c| c.send_form(player, form, callback));
     }
     true
@@ -289,7 +289,7 @@ pub fn send_form(player: u128, form: Form, callback: Option<Callback>) -> bool {
 
 /// `FloodgateApi.closeForm`.
 pub fn close_form(player: u128) -> bool {
-    if crate::player(player).is_some() {
+    if crate::horizon_floodgate_core::player(player).is_some() {
         let answers = with(|c| {
             c.close_form(player);
             std::mem::take(&mut c.answers)
@@ -323,7 +323,7 @@ pub fn uploaded_skin(player: u128) -> Option<Skin> {
 
 /// The game half: a payload from a player on a `floodgate:` channel.
 pub fn on_payload(player: u128, channel: &str, data: &[u8]) {
-    let name = crate::player(player).map(|p| p.correct_username().to_string());
+    let name = crate::horizon_floodgate_core::player(player).map(|p| p.correct_username().to_string());
     let answers = with(|c| {
         c.on_payload(player, name.as_deref(), channel, data);
         std::mem::take(&mut c.answers)
@@ -350,7 +350,7 @@ pub fn flush(online: &[u128]) -> Vec<Out> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forms::Button;
+    use crate::horizon_floodgate_core::forms::Button;
     use std::sync::{Arc, Mutex as M};
 
     fn modal() -> Form {

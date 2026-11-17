@@ -26,7 +26,7 @@ use data::{BedrockData, ParseError};
 /// Where the config and the key live, relative to the server's folder.
 pub const CONFIG_DIR: &str = "config/floodgate";
 /// The config written when there is none.
-pub const DEFAULT_CONFIG: &str = include_str!("../default-config.toml");
+pub const DEFAULT_CONFIG: &str = include_str!("../../data/floodgate/default-config.toml");
 
 /// `Constants.INTERNAL_ERROR_MESSAGE`.
 pub const INTERNAL_ERROR_MESSAGE: &str =

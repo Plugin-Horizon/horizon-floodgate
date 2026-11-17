@@ -4,20 +4,22 @@
 //! What works here: `/floodgate`, `/linkaccount`, `/unlinkaccount` (the usage levels, and the nodes of the
 //! two link commands), the `floodgate:` channels both ways (raw play channels, arismoko #3209: the tick's payloads
 //! with `player.send_payload`, form answers and uploaded skins through the channel handler), the kick of
-//! `Out::Kick` (`player.kick`), the skin of `Out::ApplySkin` (`player.set_profile_property` + `player.refresh`;
-//! it fires once Geyser uploads a skin), `require-link` for Bedrock-looking UUIDs
+//! `Out::Kick` (`host.player_disconnect`), `require-link` for Bedrock-looking UUIDs
 //! with own linking, and forgetting a player who leaves.
 //!
 //! What does not work yet, each one a `TODO(arismoko-api: ...)` below and listed in PORT_NOTES.md: the
 //! handshake (Floodgate data in the host name is never read, so no Bedrock player is a Floodgate player,
 //! no key check, no forms), Global Linking lookups (a web request would block the tick), and the core's own
 //! `minecraft:register` of the channels (mods may not send on `minecraft:`; not needed by Geyser).
+
+pub mod horizon_floodgate_core;
 use fg::channels::Out;
 use fg::commands::{Sender, run, usages};
 use horizon_floodgate_core as fg;
 use mod_api::{
-    Command, Flow, Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadId, Registrar,
+    Command, Flow, Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId, Registrar,
     RegistrationContext, PlayerCommandEvent, PlayerLoggedOutEvent, PlayerLoginEvent,
+    NodeDefault, PermissionGatherNodesEvent, PermissionLevel, PermissionNode, PermissionValueType,
     RegisterCommandsEvent, ServerAboutToStartEvent, ServerHost, ServerTickEvent, ServerTickPhase,
     Text,
 };
@@ -29,8 +31,8 @@ struct Mod;
 struct Inbox(&'static str);
 
 impl IPayloadHandler for Inbox {
-    fn handle(&self, payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), String> {
-        let player = context.player().map_err(|e| format!("{e:?}"))?;
+    fn handle(&self, payload: PayloadBytes, context: &mut dyn IPayloadContext) -> Result<(), PayloadHandleError> {
+        let player = context.player().map_err(|e| PayloadHandleError::Failed(format!("{e:?}")))?;
         fg::channels::on_payload(player.uuid(), self.0, &payload.0);
         Ok(())
     }
@@ -47,8 +49,23 @@ fn legacy_text(host: &dyn ServerHost, line: &str) -> Text {
         .unwrap_or_else(|_| Text::literal(line.to_owned()))
 }
 
+/// The typed node for one `floodgate.*` name (a Boolean, as the commands ask it).
+fn perm_node(name: &str) -> PermissionNode {
+    PermissionNode::new(name, PermissionValueType::Boolean)
+}
+
 #[mod_api::horizon_mod]
 impl Hooks for Mod {
+    fn permission_gather_nodes(&self, event: &mut PermissionGatherNodesEvent<'_>) {
+        // The usages' nodes, each at the operator level its usage needs (the level the string nodes fell back to).
+        let config = fg::config();
+        for (_, level, node) in usages(&config.player_link) {
+            if let Some(node) = node {
+                let _ = event.nodes.add(perm_node(node), NodeDefault::Level(PermissionLevel::from_level(i32::from(level))));
+            }
+        }
+    }
+
     /// The four Floodgate channels (form, packet, skin, transfer) as raw play channels, each with the inbox.
     fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
         let mut payloads = registrar.payload_handlers();
@@ -96,7 +113,7 @@ impl Hooks for Mod {
             // The usage's Java node gates its literal path (the provider's answer, else the level):
             // `/floodgate` (everyone) and `/floodgate version` (operators) each keep their own.
             if let Some(node) = node {
-                command = command.with_node(node);
+                command = command.with_node(&perm_node(node));
             }
             event.commands.push(command);
         }
@@ -121,7 +138,7 @@ impl Hooks for Mod {
         let mut level = player.permission_level(&*host).unwrap_or(0);
         // Audit 2026-11-14: a granted `floodgate.command.floodgate.version` node must pass the level check
         // in the core's `run` (it only compares levels), as the engine tree already does for the node.
-        if player.permission_value(&*host, "floodgate.command.floodgate.version") == Some(true) {
+        if player.permission_bool(&mut *host, &perm_node("floodgate.command.floodgate.version")).unwrap_or(false) {
             level = level.max(fg::commands::OP_LEVEL);
         }
         let sender = Sender {
@@ -200,26 +217,14 @@ impl Hooks for Mod {
                 }
                 Out::Kick { player, reason } => {
                     if let Some(p) = players.iter().find(|p| p.uuid() == player) {
-                        let _ = p.kick(host, Text::literal(reason.to_string()));
+                        let _ = p.disconnect(host, Text::literal(reason.to_string()));
                     }
                 }
                 Out::ApplySkin { player, skin } => {
-                    // The uploaded skin becomes the profile's textures, then the player is shown again.
-                    match players.iter().find(|p| p.uuid() == player) {
-                        Some(p) => {
-                            if p.set_profile_property(
-                                host,
-                                "textures",
-                                skin.value.as_str(),
-                                Some(skin.signature.as_str()),
-                            ) {
-                                let _ = p.refresh(host);
-                            } else {
-                                log("WARN", &format!("skin of {player:032x} refused by the profile API"));
-                            }
-                        }
-                        None => log("WARN", &format!("skin of {player:032x}: player not online")),
-                    }
+                    // HMOD-GAP(profile-property): Horizon main can read a player's profile but has no call to set its
+                    // textures or to refresh the player. The uploaded skin is not applied; the player keeps their own skin.
+                    let _ = skin;
+                    log("WARN", &format!("skin of {player:032x} not applied: no profile API on Horizon main"));
                 }
                 Out::Log { level, line } => log(level, &line),
             }

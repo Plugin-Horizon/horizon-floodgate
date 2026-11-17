@@ -8,8 +8,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::link::{LinkConfig, Linking, LINK_INFO_URL};
-use crate::store::{self, LinkError, Own};
+use crate::horizon_floodgate_core::link::{LinkConfig, Linking, LINK_INFO_URL};
+use crate::horizon_floodgate_core::store::{self, LinkError, Own};
 
 /// `floodgate.commands.global_linking_notice`.
 pub fn global_linking_notice() -> String {
@@ -113,7 +113,7 @@ pub fn unlink_own(own: &mut Own, sender: &Sender, bedrock: Option<(u128, String)
 
 /// The sender as a Bedrock player: their Floodgate id and Bedrock name.
 fn bedrock_of(sender: &Sender) -> Option<(u128, String)> {
-    crate::player(sender.uuid).map(|p| (p.java_uuid, p.data.username))
+    crate::horizon_floodgate_core::player(sender.uuid).map(|p| (p.java_uuid, p.data.username))
 }
 
 fn own_reply(sender: &Sender, words: &mut std::str::SplitWhitespace<'_>, link: bool, timeout: i64) -> Reply {
@@ -128,7 +128,7 @@ fn own_reply(sender: &Sender, words: &mut std::str::SplitWhitespace<'_>, link: b
     });
     let reply = done.unwrap_or_else(|e| say(format!("Linking is unavailable: {e}")));
     if let Some(reason) = &reply.kick {
-        crate::channels::kick(sender.uuid, reason);
+        crate::horizon_floodgate_core::channels::kick(sender.uuid, reason);
     }
     reply
 }
@@ -189,7 +189,7 @@ pub fn run(line: &str, sender: Option<&Sender>, config: &LinkConfig) -> Option<V
                 Some("version") if level >= OP_LEVEL => Some(vec![format!(
                     "\u{a7}7You're currently on \u{a7}bhorizon-floodgate {}\u{a7}7 (Floodgate data version {})",
                     env!("CARGO_PKG_VERSION"),
-                    crate::cipher::VERSION
+                    crate::horizon_floodgate_core::cipher::VERSION
                 )]),
                 Some("version") => Some(vec![NO_PERMISSION.into()]),
                 Some(_) => None,

@@ -6,9 +6,9 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use crate::data::LinkedPlayer;
+use crate::horizon_floodgate_core::data::LinkedPlayer;
 
-/// The database file inside [`crate::CONFIG_DIR`].
+/// The database file inside [`crate::horizon_floodgate_core::CONFIG_DIR`].
 pub const DB_FILE: &str = "linked-players.db";
 
 /// The linked accounts.
@@ -225,12 +225,12 @@ pub fn new_code() -> String {
 
 static OWN: Mutex<Option<Own>> = Mutex::new(None);
 
-/// The open database (created in [`crate::CONFIG_DIR`] on first use). None, with the reason logged once per
+/// The open database (created in [`crate::horizon_floodgate_core::CONFIG_DIR`] on first use). None, with the reason logged once per
 /// call, when it can't be opened.
 pub fn with<R>(f: impl FnOnce(&mut Own) -> R) -> Result<R, String> {
     let mut g: MutexGuard<'_, Option<Own>> = OWN.lock().unwrap_or_else(|e| e.into_inner());
     if g.is_none() {
-        let dir = Path::new(crate::CONFIG_DIR);
+        let dir = Path::new(crate::horizon_floodgate_core::CONFIG_DIR);
         let _ = std::fs::create_dir_all(dir);
         *g = Some(Own::new(Store::open(&dir.join(DB_FILE))?));
     }
