@@ -13,3 +13,8 @@ Round 1
   - The gather hook calls `fg::config()` to read the usage nodes (the same call `register_commands` makes).
   - `player_disconnect` may differ from a plain kick in its broadcast or its reason text; the reason is passed as before.
   - Module header updated: it no longer claims the skin path works.
+
+Round 2 (parity fixes)
+- Fixed: default config had `enable-global-linking = false` (now `true`, as Floodgate and the README), so the link commands are registered on a fresh install; `/floodgate`, `/linkaccount`, `/unlinkaccount` now work from the console, RCON and command blocks (`run_mod_command`); `/floodgate firewall` added (node `floodgate.command.floodgate.firewall`, operators, health request on its own thread, answers delivered next tick); help lists `firewall`; `/linkaccount <player>` suggests online players (`tab_complete`); README and `horizon-mod.toml` description say honestly that the handshake is not read.
+- Gaps: handshake / Floodgate data (needs an engine hook), `/fwhitelist` (no whitelist API), skin application, `require-link` with Global Linking, `floodgate.news.receive`.
+- Dropped finding: `OP_LEVEL = 1` is kept (Bukkit's `isOp()` is any ops entry, which is level 1 and up).
