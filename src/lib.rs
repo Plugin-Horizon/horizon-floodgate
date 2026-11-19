@@ -1,7 +1,7 @@
 //! Floodgate's backend part as an arismoko native trait mod (`mod_api`). The logic is the unchanged
 //! `horizon-floodgate-core` crate (`core/`); this file only wires it to hooks and host methods.
 //!
-//! What works here: `/floodgate`, `/linkaccount`, `/unlinkaccount` (the usage levels, and the nodes of the
+//! What works here: `/floodgate` (with `version` and `firewall`), `/linkaccount`, `/unlinkaccount` (the usage levels, and the nodes of the
 //! two link commands), the `floodgate:` channels both ways (raw play channels, arismoko #3209: the tick's payloads
 //! with `player.send_payload`, form answers and uploaded skins through the channel handler), the kick of
 //! `Out::Kick` (`host.player_disconnect`), `require-link` for Bedrock-looking UUIDs
@@ -17,11 +17,11 @@ use fg::channels::Out;
 use fg::commands::{Sender, run, usages};
 use horizon_floodgate_core as fg;
 use mod_api::{
-    Command, Flow, Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId, Registrar,
+    Command, CommandArgumentValue, CommandSource, Flow, Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId, Registrar,
     RegistrationContext, PlayerCommandEvent, PlayerLoggedOutEvent, PlayerLoginEvent,
     NodeDefault, PermissionGatherNodesEvent, PermissionLevel, PermissionNode, PermissionValueType,
-    RegisterCommandsEvent, ServerAboutToStartEvent, ServerHost, ServerTickEvent, ServerTickPhase,
-    Text,
+    RegisterCommandsEvent, RunModCommandEvent, ServerAboutToStartEvent, ServerHost, ServerTickEvent,
+    ServerTickPhase, Suggestion, TabCompleteEvent, Text,
 };
 
 #[derive(Default)]
@@ -52,6 +52,43 @@ fn legacy_text(host: &dyn ServerHost, line: &str) -> Text {
 /// The typed node for one `floodgate.*` name (a Boolean, as the commands ask it).
 fn perm_node(name: &str) -> PermissionNode {
     PermissionNode::new(name, PermissionValueType::Boolean)
+}
+
+/// The answer lines to a command line (without its slash), or None when it is not Floodgate's. `sender` is
+/// the player (uuid, name); None is the console or a command block.
+fn answer(host: &mut dyn ServerHost, sender: Option<(u128, &str)>, line: &str) -> Option<Vec<Text>> {
+    let config = fg::config();
+    let sender = match sender {
+        None => None,
+        Some((uuid, name)) => {
+            let player = host.player(uuid)?;
+            let mut level = player.permission_level(&*host).unwrap_or(0);
+            // Audit 2026-11-14: a granted node of a sub-command must pass the level check in the core's
+            // `run` (it only compares levels), as the engine tree already does for the node.
+            for node in ["floodgate.command.floodgate.version", "floodgate.command.floodgate.firewall"] {
+                if player.permission_bool(&mut *host, &perm_node(node)).unwrap_or(false) {
+                    level = level.max(fg::commands::OP_LEVEL);
+                }
+            }
+            Some(Sender { level, uuid, name: name.to_string() })
+        }
+    };
+    let lines = run(line, sender.as_ref(), &config.player_link)?;
+    Some(lines.iter().map(|l| legacy_text(&*host, l)).collect())
+}
+
+/// A line without its `§x` colour codes, for the console log.
+fn plain(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{a7}' {
+            chars.next();
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[mod_api::horizon_mod]
@@ -126,31 +163,62 @@ impl Hooks for Mod {
         host: &mut dyn ServerHost,
         event: &mut PlayerCommandEvent<'_>,
     ) -> Flow {
-        let config = fg::config();
-        let Some(player) = host
-            .players()
-            .server_players()
-            .into_iter()
-            .find(|p| p.uuid() == event.player)
-        else {
+        let Some(lines) = answer(host, Some((event.player, &*event.name)), event.command) else {
             return Flow::Continue;
         };
-        let mut level = player.permission_level(&*host).unwrap_or(0);
-        // Audit 2026-11-14: a granted `floodgate.command.floodgate.version` node must pass the level check
-        // in the core's `run` (it only compares levels), as the engine tree already does for the node.
-        if player.permission_bool(&mut *host, &perm_node("floodgate.command.floodgate.version")).unwrap_or(false) {
-            level = level.max(fg::commands::OP_LEVEL);
+        event.replies.extend(lines);
+        Flow::Cancel
+    }
+
+    /// `/floodgate`, `/linkaccount` and `/unlinkaccount` from the console, RCON or a command block (the
+    /// console may run `/floodgate`; the link commands answer that they are for players), and from a player
+    /// through `execute`. A player's typed line is answered in `player_command`.
+    fn run_mod_command(&self, host: &mut dyn ServerHost, event: &mut RunModCommandEvent<'_>) -> Flow {
+        if !matches!(
+            event.command.literals.first().map(String::as_str),
+            Some("floodgate" | "linkaccount" | "unlinkaccount")
+        ) {
+            return Flow::Continue;
         }
-        let sender = Sender {
-            level,
-            uuid: event.player,
-            name: event.name.to_string(),
+        // The typed line again: the literal path, then the arguments (every usage has them in that order).
+        let mut line = event.command.literals.join(" ");
+        for argument in &event.command.arguments {
+            if let CommandArgumentValue::String(text) = &argument.value {
+                line.push(' ');
+                line.push_str(text);
+            }
+        }
+        let sender = match &event.source {
+            CommandSource::Player { player, .. } => Some((player.uuid(), player.name(&*host).unwrap_or_default())),
+            _ => None,
         };
-        if let Some(lines) = run(event.command, Some(&sender), &config.player_link) {
-            event.replies.extend(lines.iter().map(|line| legacy_text(&*host, line)));
-            return Flow::Cancel;
+        let Some(lines) = answer(host, sender.as_ref().map(|(u, n)| (*u, n.as_str())), &line) else {
+            return Flow::Continue;
+        };
+        for line in lines {
+            let _ = host.commands().feedback(line);
         }
-        Flow::Continue
+        Flow::Cancel
+    }
+
+    /// The player name of `/linkaccount <player>`: the engine's `word` argument suggests nothing, so the
+    /// online players are offered (Floodgate's `PlayerAudienceArgument` does).
+    fn tab_complete(&self, host: &mut dyn ServerHost, event: &mut TabCompleteEvent<'_>) {
+        let typed = event.command;
+        let line = typed.strip_prefix('/').unwrap_or(typed);
+        let words: Vec<&str> = line.split(' ').collect();
+        if words.len() != 2 || !words[0].eq_ignore_ascii_case("linkaccount") || !fg::config().player_link.register_commands() {
+            return;
+        }
+        let start = typed.len() - words[1].len();
+        let prefix = words[1].to_ascii_lowercase();
+        for p in host.players().server_players() {
+            if let Some(name) = p.name(&*host)
+                && name.to_ascii_lowercase().starts_with(&prefix)
+            {
+                event.suggestions.push(Suggestion::new((start, typed.len()), name));
+            }
+        }
     }
 
     /// `require-link` (Floodgate's `on_pre_login` in the Horizon port). Only the own-database lookup runs
@@ -198,6 +266,24 @@ impl Hooks for Mod {
         }
         let players = host.players().server_players();
         let online: Vec<u128> = players.iter().map(|p| p.uuid()).collect();
+        // The rest of `/floodgate firewall`, from its thread: to the player, or to the log for the console.
+        for (to, lines) in fg::commands::take_later() {
+            match to {
+                Some(uuid) => {
+                    if let Some(p) = players.iter().find(|p| p.uuid() == uuid) {
+                        for line in &lines {
+                            let text = legacy_text(&*host, line);
+                            let _ = p.tell(host, text);
+                        }
+                    }
+                }
+                None => {
+                    for line in &lines {
+                        log("INFO", &plain(line));
+                    }
+                }
+            }
+        }
         for out in fg::channels::flush(&online) {
             match out {
                 Out::Payload {

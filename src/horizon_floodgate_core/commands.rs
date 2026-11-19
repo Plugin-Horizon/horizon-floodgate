@@ -3,12 +3,12 @@
 //! LICENSE). Floodgate's player-facing texts live in its translation files, which have no licence, so the
 //! wording of the translated lines below is the port's own; the structure and the decisions are Floodgate's.
 //!
-//! Not ported: `/fwhitelist` (Horizon has no helper to add a profile to the whitelist; see the README) and
-//! `/floodgate firewall`.
+//! Not ported: `/fwhitelist` (Horizon has no helper to add a profile to the whitelist; see the README).
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::horizon_floodgate_core::link::{LinkConfig, Linking, LINK_INFO_URL};
+use crate::horizon_floodgate_core::link::{http_get, LinkConfig, Linking, LINK_INFO_URL};
 use crate::horizon_floodgate_core::store::{self, LinkError, Own};
 
 /// `floodgate.commands.global_linking_notice`.
@@ -29,6 +29,42 @@ pub struct Sender {
     pub level: u8,
     pub uuid: u128,
     pub name: String,
+}
+
+/// `Constants.HEALTH_URL`: what `/floodgate firewall` asks.
+pub const HEALTH_URL: &str = "https://api.geysermc.org/health";
+
+/// Lines a command answers after it returned (the firewall check waits for the network on its own
+/// thread): the recipient (`None` is the console) and the lines. The tick delivers them.
+static LATER: Mutex<Vec<(Option<u128>, Vec<String>)>> = Mutex::new(Vec::new());
+
+/// The answers that came in since the last call.
+pub fn take_later() -> Vec<(Option<u128>, Vec<String>)> {
+    std::mem::take(&mut *LATER.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// What `/floodgate firewall` says once the health request answered with `code` (-1 for none) and `body`.
+pub fn firewall_report(code: i32, body: &str) -> Vec<String> {
+    let ok = (200..300).contains(&code);
+    let mut lines = Vec::new();
+    if ok {
+        lines.push("\u{a7}aWas able to connect to global api!".to_string());
+    } else {
+        lines.push("\u{a7}cFailed to connect:".to_string());
+        lines.push(format!("Didn't receive an 'ok' http code. Got: {code}, response: {body}"));
+    }
+    lines.push(format!("\u{a7}eThe checks have finished. {}/1 were successful", u8::from(ok)));
+    lines
+}
+
+/// `/floodgate firewall`: the first line now, the rest from a thread (a web request must not stall the tick).
+fn start_firewall_check(to: Option<u128>) -> Vec<String> {
+    std::thread::spawn(move || {
+        let response = http_get(HEALTH_URL);
+        let lines = firewall_report(response.code, &response.body);
+        LATER.lock().unwrap_or_else(|e| e.into_inner()).push((to, lines));
+    });
+    vec!["\u{a7}eTesting global api...".to_string()]
 }
 
 /// What an own-linking command answers, and whether the sender is disconnected after it.
@@ -144,6 +180,7 @@ pub const OP_LEVEL: u8 = 1;
 pub fn usages(config: &LinkConfig) -> Vec<(&'static str, u8, Option<&'static str>)> {
     let mut u = vec![
         ("floodgate", 0, Some("floodgate.command.floodgate")),
+        ("floodgate firewall", OP_LEVEL, Some("floodgate.command.floodgate.firewall")),
         ("floodgate version", OP_LEVEL, Some("floodgate.command.floodgate.version")),
     ];
     if config.register_commands() {
@@ -182,10 +219,15 @@ pub fn run(line: &str, sender: Option<&Sender>, config: &LinkConfig) -> Option<V
                 None => {
                     let mut help = String::from("Available subcommands are:\n");
                     if level >= OP_LEVEL {
+                        help.push_str(
+                            "\n\u{a7}bfirewall\u{a7}f - \u{a7}7Check if your outgoing firewall allows Floodgate to work properly",
+                        );
                         help.push_str("\n\u{a7}bversion\u{a7}f - \u{a7}7Displays version information about Floodgate");
                     }
                     Some(vec![help])
                 }
+                Some("firewall") if level >= OP_LEVEL => Some(start_firewall_check(sender.map(|s| s.uuid))),
+                Some("firewall") => Some(vec![NO_PERMISSION.into()]),
                 Some("version") if level >= OP_LEVEL => Some(vec![format!(
                     "\u{a7}7You're currently on \u{a7}bhorizon-floodgate {}\u{a7}7 (Floodgate data version {})",
                     env!("CARGO_PKG_VERSION"),
@@ -234,7 +276,7 @@ mod tests {
         assert!(!usages(&off)
             .iter()
             .any(|(u, _, _)| u.starts_with("linkaccount")));
-        assert_eq!(usages(&c).len(), 4);
+        assert_eq!(usages(&c).len(), 5);
         assert!(usages(&c)
             .iter()
             .any(|(u, _, _)| *u == "linkaccount <player:player_name> [code:word]"));
@@ -255,8 +297,30 @@ mod tests {
             run("floodgate version", Some(&player), &c),
             Some(vec![NO_PERMISSION.into()])
         );
-        assert_eq!(run("floodgate firewall", Some(&op), &c), None);
+        assert_eq!(run("floodgate firewall", Some(&player), &c), Some(vec![NO_PERMISSION.into()]));
+        assert!(run("floodgate", Some(&op), &c).unwrap()[0].contains("\u{a7}bfirewall\u{a7}f - \u{a7}7Check if your outgoing"));
+        assert!(!run("floodgate", Some(&player), &c).unwrap()[0].contains("firewall"));
+        assert_eq!(run("floodgate bogus", Some(&op), &c), None);
         assert_eq!(run("gamemode 1", Some(&op), &c), None);
+    }
+
+    #[test]
+    fn firewall_report_lines() {
+        assert_eq!(
+            firewall_report(200, "{}"),
+            vec![
+                "\u{a7}aWas able to connect to global api!".to_string(),
+                "\u{a7}eThe checks have finished. 1/1 were successful".to_string()
+            ]
+        );
+        assert_eq!(
+            firewall_report(503, "down"),
+            vec![
+                "\u{a7}cFailed to connect:".to_string(),
+                "Didn't receive an 'ok' http code. Got: 503, response: down".to_string(),
+                "\u{a7}eThe checks have finished. 0/1 were successful".to_string()
+            ]
+        );
     }
 
     #[test]

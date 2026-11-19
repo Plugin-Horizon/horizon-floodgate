@@ -20,10 +20,10 @@ invalid-arguments-length = "Expected {} arguments, got {}. Is Geyser up-to-date?
 enabled = true
 # Refuse Bedrock players without a linked Java account.
 require-link = false
-# Floodgate's own linking database is not ported: with this on and global linking off, linking is disabled.
+# Floodgate's own linking database (SQLite): it answers first, and /linkaccount uses it.
 enable-own-linking = false
 allowed = true
 link-code-timeout = 300
 type = "sqlite"
 # Look up links the proxy did not send at GeyserMC's Global Linking API (api.geysermc.org).
-enable-global-linking = false
+enable-global-linking = true

@@ -640,6 +640,9 @@ mod tests {
             c.disconnect.invalid_key,
             "Please connect through the official Geyser"
         );
+        // Floodgate's config.yml ships global linking on, own linking off.
+        assert!(c.player_link.enable_global_linking);
+        assert!(!c.player_link.enable_own_linking);
         let custom: Config = toml::from_str("username-prefix = \"*\"").unwrap();
         assert_eq!(custom.username_prefix, "*");
         assert_eq!(custom.key_file_name, "key.pem");
