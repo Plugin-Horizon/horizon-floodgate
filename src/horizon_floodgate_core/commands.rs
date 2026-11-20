@@ -267,7 +267,12 @@ pub fn run(line: &str, sender: Option<&Sender>, config: &LinkConfig) -> Option<V
             };
             if config.own() {
                 let link = name == "linkaccount";
-                let mut lines = own_reply(sender, &mut words, link, config.link_code_timeout).lines;
+                // `allowed = false`: LinkAccountCommand and UnlinkAccountCommand check `isEnabledAndAllowed()` after the notice.
+                let mut lines = if config.allowed {
+                    own_reply(sender, &mut words, link, config.link_code_timeout).lines
+                } else {
+                    vec![LINKING_DISABLED.into()]
+                };
                 // Both on: Floodgate says the own database is in use before it goes on (`LOCAL_LINKING_NOTICE`).
                 if config.linking() == Linking::Global {
                     lines.insert(0, local_linking_notice());
@@ -362,6 +367,20 @@ mod tests {
         assert!(usages(&c)
             .iter()
             .any(|(u, _, _)| *u == "linkaccount <player:player_name> [code:word]"));
+    }
+
+    #[test]
+    fn own_linking_with_allowed_off_says_disabled() {
+        let player = Sender { level: 0, uuid: 1, name: "Steve".into() };
+        let own_only = LinkConfig { enable_global_linking: false, enable_own_linking: true, allowed: false, ..LinkConfig::default() };
+        assert_eq!(run("linkaccount Alex", Some(&player), &own_only), Some(vec![LINKING_DISABLED.into()]));
+        assert_eq!(run("unlinkaccount", Some(&player), &own_only), Some(vec![LINKING_DISABLED.into()]));
+        // Both on: the own-database notice comes first, then the same answer.
+        let both = LinkConfig { enable_own_linking: true, allowed: false, ..LinkConfig::default() };
+        assert_eq!(
+            run("unlinkaccount", Some(&player), &both),
+            Some(vec![local_linking_notice(), LINKING_DISABLED.into()])
+        );
     }
 
     #[test]
