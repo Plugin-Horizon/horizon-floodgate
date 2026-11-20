@@ -33,7 +33,8 @@ into the handshake it sends the backend server. This mod is what Floodgate is on
   back parsed (closed, invalid, or the button/values), close a player's forms, send a transfer to another Bedrock
   server or a raw packet for Geyser. A player's forms are answered as closed when they leave. Payloads from players
   are refused as Floodgate refuses them (a non-Bedrock player, a packet or transfer from the client, a malformed
-  skin), with Floodgate's kick messages. Each player is sent `minecraft:register` with the four channels on join.
+  skin), with Floodgate's kick messages. The four channels are declared to the engine; the `minecraft:register`
+  message Floodgate sends on join is not sent (the engine refuses mods on `minecraft:`, see Known gaps).
 - Linking: a Bedrock player whose proxy sent no link is looked up at GeyserMC's Global Linking API (as Floodgate's
   `fetchLinkedPlayer`); `require-link` refuses Bedrock players without a link. As on Paper with proxy data, a link
   found on the backend goes into the player's Floodgate data only; the name and UUID stay the proxy's.
