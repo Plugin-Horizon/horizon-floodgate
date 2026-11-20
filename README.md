@@ -1,5 +1,9 @@
 # horizon-floodgate
 
+## Port status
+
+Compared with Floodgate 81b65cc (GeyserMC): **72 %** of the original's commands, permissions, config keys, messages and features work today; **86 %** once our open Horizon PRs are merged; **91 %** with the engine changes we are writing; **77 %** with the newest Horizon SDK. Counted on 31/43 items (see HMOD_PORT.md). Status: not yet compiled after the 2026-11-20 round.
+
 > **Unofficial Rust port of Floodgate for the Horizon server (https://github.com/arismoko/horizon). Not affiliated with or endorsed by the Floodgate authors.**
 
 The backend part of [Floodgate](https://github.com/GeyserMC/Floodgate) as a native mod for
