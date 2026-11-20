@@ -1,5 +1,30 @@
 # hmod port: floodgate
-Parity: before 60% -> after 72% default build, 86% with feature horizon_handshake_hook (31/43, 37/43; method: 7 commands + 7 nodes + 17 config keys + 12 features; blocked-by-API counts as not done)
+Parity: 72% now / 86% with our PRs / 91% with engine changes / 77% with new SDK (31/43, 37/43, 39/43, 33/43; method: 7 commands + 7 nodes + 17 config keys + 12 features; blocked-by-API counts as not done)
+Round 100 (Haiku, blind, not compiled): the four values are unchanged because the count method counts items, and this round only closed behaviour inside items already counted (see the checklist below).
+
+Checklist round 100 (original = GeyserMC/Floodgate 81b65cc, MIT, read; `languages` repo not read)
+- [x] `/floodgate` help: sub-commands the sender may use (ops: firewall, version); console path.
+- [x] `/floodgate firewall`: "Testing global api...", "Was able to connect...", "The checks have finished. n/1" (thread).
+- [~] `/floodgate firewall` failure: port prints the reason, not Java's stack trace (no stack traces in Horizon).
+- [ ] `/floodgate version`: original checks GeyserMC's latest build; port reports its own version. Not applicable (different product, no build feed).
+- [x] `/linkaccount` and `/unlinkaccount`: notice order (global-only stops, both on prints the own-database notice first).
+- [x] `allowed = false` (own linking): both link commands answer "linking disabled" (round 100, commands.rs).
+- [x] Link code checked before expiry; a wrong code keeps the request (store.rs, as SqliteDatabase).
+- [x] `/fwhitelist add|a|remove|r` with names (Global API on a thread) and UUIDs; edits `whitelist.json`.
+- [x] Permission nodes: floodgate, .version, .firewall, .linkaccount, .unlinkaccount, .fwhitelist, news.receive (defaults as Permission.java).
+- [x] Config keys and defaults: key-file-name, username-prefix, replace-spaces, disconnect.*, player-link.* (default `enable-global-linking = true`).
+- [x] `username-prefix` of 16 or more characters becomes `.` (FloodgateConfig.postInitialize, round 100).
+- [x] Prefix warnings at start (PostEnableMessages texts; logged at the first config read, not after 5 s).
+- [x] `type = "mysql"` (or other non-sqlite) with own linking: warning at start; still SQLite (not ported).
+- [ ] `default-locale`, `metrics`, `config-version`: not read (translations, telemetry and config versioning are not in the port).
+- [ ] `floodgate-test` command: only with the original's DEBUG_MODE, which is false in release. Not ported.
+- [~] Tab completion: `linkaccount <player>` suggests online players; `fwhitelist add|remove <player>` suggests online Bedrock players; sub-command literals by the engine.
+- [ ] Translations: every message is the port's English (the translation repo has no licence and was not opened).
+- [ ] Skin apply (`floodgate:skin` result): API-blocked (GAPS_UPSTREAM `set_profile_property`).
+- [ ] Handshake data, Global Linking at login, `require-link` with Global Linking: code is behind `horizon_handshake_hook` (API-blocked, GAPS_UPSTREAM `player_handshake`).
+- [ ] `minecraft:register` message: not sent (engine refuses mods on `minecraft:`); README corrected.
+- [ ] Plugin channels (form, packet, skin, transfer): not re-walked in round 100; last checked in round 3.
+- [ ] Own linking with type mysql/mongo: not ported.
 Round 1
 - Fixed: `IPayloadHandler::handle` returns `PayloadHandleError` (`Inbox`, src/lib.rs).
 - Fixed: `Command::with_node` takes `&PermissionNode`; built with `perm_node(node)` (`register_commands`, src/lib.rs).
