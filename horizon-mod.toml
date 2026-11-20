@@ -1,7 +1,7 @@
 id = "floodgate"
 name = "Floodgate"
 version = "0.1.0"
-description = "Floodgate's backend part for a Floodgate proxy: Bedrock player data, /floodgate, /linkaccount, /unlinkaccount. Partial on arismoko: the Bedrock handshake is not read yet, so only the commands and the plugin channels run (see README)."
+description = "Floodgate's backend part for a Floodgate proxy: Bedrock player data, /floodgate, /linkaccount, /unlinkaccount, /fwhitelist. The Bedrock handshake is read through the player_handshake hook (cargo feature horizon_handshake_hook, off until the SDK has the hook); without it only the commands and the plugin channels run (see README)."
 authors = ["LionSpacer"]
 api = "0.2"
 side = "server"

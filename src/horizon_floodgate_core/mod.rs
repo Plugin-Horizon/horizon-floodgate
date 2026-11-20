@@ -14,6 +14,7 @@ pub mod data;
 pub mod forms;
 pub mod link;
 pub mod store;
+pub mod whitelist;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -450,6 +451,96 @@ pub fn on_profile(player: u128) -> Option<String> {
     line
 }
 
+/// How a Bedrock player's Global or own link is looked up (a plain function, so a test can stand in for the web).
+type LinkLookup = fn(&link::LinkConfig, i64) -> Result<Option<data::LinkedPlayer>, String>;
+
+/// A handshake the `player_handshake` hook accepted, waiting for its login (`player_login`). The login is
+/// found by the UUID the proxy forwards: the Floodgate UUID or the linked Java account's.
+struct Handshake {
+    at: Instant,
+    ids: Vec<u128>,
+    outcome: Outcome,
+    /// The link lookup, started at the handshake so the login rarely waits for the web.
+    lookup: Option<std::thread::JoinHandle<Result<Option<data::LinkedPlayer>, String>>>,
+}
+
+static HANDSHAKES: Mutex<Vec<Handshake>> = Mutex::new(Vec::new());
+
+/// A handshake nobody logged in on for this long is forgotten (the client left).
+const HANDSHAKE_KEEP: Duration = Duration::from_secs(60);
+
+fn handshakes() -> std::sync::MutexGuard<'static, Vec<Handshake>> {
+    HANDSHAKES.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `player_handshake` (Horizon's mod hook, a login or a transfer, on the server thread): decrypts the host's
+/// Floodgate data, puts the plain hostname back into `host` (`separateHostname`) and keeps the Bedrock player
+/// for their login. Some is the refusal text (wrong key, wrong version, wrong field count). Nothing blocks:
+/// the Global Linking lookup runs on a thread of its own and [`on_login`] collects it.
+pub fn on_handshake_hook(host: &mut String, log: &dyn Fn(&str, &str)) -> Option<String> {
+    let state = state(log);
+    handshake_with(host, &state.config, state.key.as_ref(), find_link)
+}
+
+fn handshake_with(host: &mut String, config: &Config, key: Option<&Key>, lookup: LinkLookup) -> Option<String> {
+    let outcome = handle_host(host.as_str(), config, key)?;
+    *host = separate_hostname(host.as_str()).hostname;
+    let Outcome::Bedrock(player) = &outcome else {
+        let Outcome::Kick(text) = outcome else { return None };
+        return Some(text);
+    };
+    let link = &config.player_link;
+    let wanted = player.data.linked_player.is_none() && (link.linking() == link::Linking::Global || link.own());
+    let lookup_thread = wanted
+        .then(|| player.data.xuid.parse::<i64>().ok())
+        .flatten()
+        .map(|xuid| {
+            let link = link.clone();
+            std::thread::spawn(move || lookup(&link, xuid))
+        });
+    let mut ids = vec![player.java_uuid];
+    if player.correct_uuid() != player.java_uuid {
+        ids.push(player.correct_uuid());
+    }
+    let now = Instant::now();
+    let mut waiting = handshakes();
+    waiting.retain(|h| now.duration_since(h.at) < HANDSHAKE_KEEP);
+    waiting.retain(|h| !h.ids.iter().any(|id| ids.contains(id)));
+    waiting.push(Handshake { at: now, ids, outcome, lookup: lookup_thread });
+    None
+}
+
+/// `player_login` (the server accepted the login): a pending Bedrock handshake of this UUID becomes a Floodgate
+/// player. Err refuses the login with Floodgate's message (`require-link` without a link); Ok(Some) is Floodgate's
+/// login line; Ok(None) is a player without Floodgate data. Collects the lookup the handshake started (at most the
+/// web timeouts, normally done by now).
+pub fn on_login(uuid: u128, log: &dyn Fn(&str, &str)) -> Result<Option<String>, String> {
+    login_with(uuid, &state(log).config, log)
+}
+
+fn login_with(uuid: u128, config: &Config, log: &dyn Fn(&str, &str)) -> Result<Option<String>, String> {
+    let found = {
+        let mut waiting = handshakes();
+        waiting.iter().position(|h| h.ids.contains(&uuid)).map(|i| waiting.remove(i))
+    };
+    let Some(Handshake { outcome, lookup, .. }) = found else {
+        return Ok(None);
+    };
+    let result = match lookup {
+        Some(handle) => handle.join().unwrap_or_else(|_| Err("the link lookup stopped".into())),
+        None => Ok(None),
+    };
+    match resolve_link(Some(outcome), &config.player_link, &|_| result.clone(), log) {
+        Some(Outcome::Kick(text)) => Err(text),
+        Some(Outcome::Bedrock(bedrock)) => {
+            let line = (bedrock.correct_uuid() == uuid).then(|| bedrock.login_line());
+            add_player(*bedrock);
+            Ok(line)
+        }
+        None => Ok(None),
+    }
+}
+
 /// This thread's pending outcome, taken (the login asks once).
 pub fn take_pending() -> Option<Outcome> {
     PENDING.with(|p| p.borrow_mut().take())
@@ -569,6 +660,66 @@ mod tests {
             "play.example.org\0{}",
             String::from_utf8(payload.to_vec()).unwrap()
         )
+    }
+
+    #[test]
+    fn a_handshake_becomes_a_player_at_login() {
+        let k = key();
+        let mut other = data();
+        other.xuid = "2535400000000002".into();
+        let host = host_with(&k.encrypt(other.to_wire().as_bytes()).unwrap());
+        let mut host = host;
+        let none: LinkLookup = |_, _| Ok(None);
+        assert_eq!(handshake_with(&mut host, &Config::default(), Some(&k), none), None);
+        assert_eq!(host, "play.example.org", "the host is cut back to the plain name");
+        let uuid = create_java_player_id(2535400000000002);
+        let line = login_with(uuid, &Config::default(), &|_, _| {}).unwrap();
+        assert!(line.unwrap().starts_with("Floodgate player logged in as .Steve_Two joined"));
+        assert!(is_floodgate_player(uuid));
+        // The handshake is used up; a second login of that UUID has no data.
+        assert_eq!(login_with(uuid, &Config::default(), &|_, _| {}), Ok(None));
+        remove_player(uuid);
+    }
+
+    #[test]
+    fn a_wrong_key_refuses_at_the_handshake_and_require_link_at_the_login() {
+        let k = key();
+        let mut other = data();
+        other.xuid = "2535400000000003".into();
+        let mut host = host_with(&k.encrypt(other.to_wire().as_bytes()).unwrap());
+        let wrong = Key::new(&[4u8; 16]).unwrap();
+        let none: LinkLookup = |_, _| Ok(None);
+        let refusal = handshake_with(&mut host.clone(), &Config::default(), Some(&wrong), none);
+        assert_eq!(refusal, Some(Config::default().disconnect.invalid_key));
+        let mut strict = Config::default();
+        strict.player_link.require_link = true;
+        assert_eq!(handshake_with(&mut host, &strict, Some(&k), none), None);
+        let uuid = create_java_player_id(2535400000000003);
+        assert_eq!(login_with(uuid, &strict, &|_, _| {}), Err(link::not_linked_message()));
+        assert!(!is_floodgate_player(uuid));
+    }
+
+    #[test]
+    fn a_link_found_at_the_handshake_is_kept_in_the_player() {
+        let k = key();
+        let mut other = data();
+        other.xuid = "2535400000000004".into();
+        let mut host = host_with(&k.encrypt(other.to_wire().as_bytes()).unwrap());
+        let found: LinkLookup = |_, _| {
+            Ok(Some(data::LinkedPlayer {
+                java_username: "Alex".into(),
+                java_uuid: 0xAB,
+                bedrock_id: 0,
+            }))
+        };
+        let mut strict = Config::default();
+        strict.player_link.require_link = true;
+        assert_eq!(handshake_with(&mut host, &strict, Some(&k), found), None);
+        let uuid = create_java_player_id(2535400000000004);
+        let line = login_with(uuid, &strict, &|_, _| {}).unwrap();
+        assert_eq!(line, None, "the login line is only for the UUID the player really got");
+        assert_eq!(player(uuid).unwrap().correct_username(), "Alex");
+        remove_player(uuid);
     }
 
     #[test]

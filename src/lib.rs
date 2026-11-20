@@ -7,15 +7,21 @@
 //! `Out::Kick` (`host.player_disconnect`), `require-link` for Bedrock-looking UUIDs
 //! with own linking, and forgetting a player who leaves.
 //!
-//! What does not work yet, each one a `TODO(arismoko-api: ...)` below and listed in PORT_NOTES.md: the
-//! handshake (Floodgate data in the host name is never read, so no Bedrock player is a Floodgate player,
-//! no key check, no forms), Global Linking lookups (a web request would block the tick), and the core's own
-//! `minecraft:register` of the channels (mods may not send on `minecraft:`; not needed by Geyser).
+//! The handshake (Floodgate data in the host name: key check, refusal messages, Floodgate players, forms,
+//! linked accounts, `require-link` with Global Linking) is read through the `player_handshake` hook of
+//! horizon-rust/horizon#18724. The mod's pinned SDK does not have that hook yet, so the code is behind the
+//! cargo feature `horizon_handshake_hook` (off by default); without it no Bedrock player is a Floodgate
+//! player and the old `require-link` fallback below runs. Turn the feature on with the SDK that carries the hook.
+//!
+//! What does not work yet: the uploaded skin (no profile API) and the core's own `minecraft:register` of the
+//! channels (mods may not send on `minecraft:`; not needed by Geyser).
 
 pub mod horizon_floodgate_core;
 use fg::channels::Out;
 use fg::commands::{Sender, run, usages};
 use horizon_floodgate_core as fg;
+#[cfg(feature = "horizon_handshake_hook")]
+use mod_api::PlayerHandshakeEvent;
 use mod_api::{
     Command, CommandArgumentValue, CommandSource, Flow, Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId, Registrar,
     RegistrationContext, PlayerCommandEvent, PlayerLoggedOutEvent, PlayerLoginEvent,
@@ -65,7 +71,11 @@ fn answer(host: &mut dyn ServerHost, sender: Option<(u128, &str)>, line: &str) -
             let mut level = player.permission_level(&*host).unwrap_or(0);
             // Audit 2026-11-14: a granted node of a sub-command must pass the level check in the core's
             // `run` (it only compares levels), as the engine tree already does for the node.
-            for node in ["floodgate.command.floodgate.version", "floodgate.command.floodgate.firewall"] {
+            for node in [
+                "floodgate.command.floodgate.version",
+                "floodgate.command.floodgate.firewall",
+                "floodgate.command.fwhitelist",
+            ] {
                 if player.permission_bool(&mut *host, &perm_node(node)).unwrap_or(false) {
                     level = level.max(fg::commands::OP_LEVEL);
                 }
@@ -101,6 +111,12 @@ impl Hooks for Mod {
                 let _ = event.nodes.add(perm_node(node), NodeDefault::Level(PermissionLevel::from_level(i32::from(level))));
             }
         }
+        // Floodgate's `Permission.NEWS_RECEIVE` (operators). Declared so a permissions mod lists it; the news
+        // feature itself does not exist here.
+        let _ = event.nodes.add(
+            perm_node("floodgate.news.receive"),
+            NodeDefault::Level(PermissionLevel::from_level(i32::from(fg::commands::OP_LEVEL))),
+        );
     }
 
     /// The four Floodgate channels (form, packet, skin, transfer) as raw play channels, each with the inbox.
@@ -128,11 +144,10 @@ impl Hooks for Mod {
                 on_off(config.player_link.require_link),
             ),
         );
-        // TODO(arismoko-api: handshake): the Floodgate data after the host's NUL is never read, and the host
-        // name is not cut back to the plain one (Floodgate's `separate_hostname`).
+        #[cfg(not(feature = "horizon_handshake_hook"))]
         log(
             "WARN",
-            "Bedrock login data is not read on arismoko yet (no handshake hook): no Bedrock player is a Floodgate player",
+            "Bedrock login data is not read (built without the player_handshake hook): no Bedrock player is a Floodgate player",
         );
     }
 
@@ -176,7 +191,7 @@ impl Hooks for Mod {
     fn run_mod_command(&self, host: &mut dyn ServerHost, event: &mut RunModCommandEvent<'_>) -> Flow {
         if !matches!(
             event.command.literals.first().map(String::as_str),
-            Some("floodgate" | "linkaccount" | "unlinkaccount")
+            Some("floodgate" | "linkaccount" | "unlinkaccount" | "fwhitelist")
         ) {
             return Flow::Continue;
         }
@@ -207,6 +222,18 @@ impl Hooks for Mod {
         let typed = event.command;
         let line = typed.strip_prefix('/').unwrap_or(typed);
         let words: Vec<&str> = line.split(' ').collect();
+        // `/fwhitelist add|remove <player>`: the online Bedrock players (`getOnlineUsernames(ONLY_BEDROCK)`).
+        if words.len() == 3 && words[0].eq_ignore_ascii_case("fwhitelist") {
+            let start = typed.len() - words[2].len();
+            let prefix = words[2].to_ascii_lowercase();
+            for p in fg::all_players() {
+                let name = p.correct_username();
+                if name.to_ascii_lowercase().starts_with(&prefix) {
+                    event.suggestions.push(Suggestion::new((start, typed.len()), name.to_string()));
+                }
+            }
+            return;
+        }
         if words.len() != 2 || !words[0].eq_ignore_ascii_case("linkaccount") || !fg::config().player_link.register_commands() {
             return;
         }
@@ -227,6 +254,20 @@ impl Hooks for Mod {
     /// only sees Bedrock-looking UUIDs, not the handshake's data.
     fn player_login(&self, _: &mut dyn ServerHost, event: &mut PlayerLoginEvent<'_>) -> Flow {
         let config = fg::config();
+        // A Bedrock handshake the hook kept for this UUID: Global Linking and `require-link` are decided here.
+        #[cfg(feature = "horizon_handshake_hook")]
+        match fg::on_login(event.player, &log) {
+            Err(reason) => {
+                *event.reason = Some(Text::literal(reason));
+                return Flow::Cancel;
+            }
+            Ok(Some(line)) => {
+                log("INFO", &line);
+                return Flow::Continue;
+            }
+            Ok(None) if fg::is_floodgate_player(event.player) => return Flow::Continue,
+            Ok(None) => {}
+        }
         let link = &config.player_link;
         if !link.require_link
             || matches!(link.linking(), fg::link::Linking::Global)
@@ -248,6 +289,20 @@ impl Hooks for Mod {
             return Flow::Cancel;
         }
         Flow::Continue
+    }
+
+    /// `player_handshake` (horizon-rust/horizon#18724): Floodgate's `FloodgateHandshakeHandler`. The host's Floodgate
+    /// data is checked and cut off; a wrong key, version or field count refuses the connection with Floodgate's
+    /// message. Off by default: the mod's SDK does not carry the hook yet (cargo feature `horizon_handshake_hook`).
+    #[cfg(feature = "horizon_handshake_hook")]
+    fn player_handshake(&self, _: &mut dyn ServerHost, event: &mut PlayerHandshakeEvent<'_>) -> Flow {
+        match fg::on_handshake_hook(&mut *event.host, &log) {
+            Some(reason) => {
+                *event.reason = Some(Text::literal(reason));
+                Flow::Cancel
+            }
+            None => Flow::Continue,
+        }
     }
 
     fn player_logged_out(&self, _: &mut dyn ServerHost, event: &mut PlayerLoggedOutEvent<'_>) {
@@ -283,6 +338,10 @@ impl Hooks for Mod {
                     }
                 }
             }
+        }
+        // `/fwhitelist` changed `whitelist.json`: the server reads it again.
+        if fg::whitelist::take_reload() {
+            host.commands().run_command("whitelist reload");
         }
         for out in fg::channels::flush(&online) {
             match out {

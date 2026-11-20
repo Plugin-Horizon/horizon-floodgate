@@ -18,3 +18,8 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # Own linking's database (Floodgate's SQLite implementation); Horizon's mod deps carry it as feature `sqlite`.
 rusqlite = { version = "0.41", default-features = false, features = ["bundled"] }
 
+
+[features]
+# The `player_handshake` hook of horizon-rust/horizon#18724 (reads the Floodgate data of a Bedrock login). Off by
+# default: the SDK this mod is pinned to does not have the hook. Turn it on once the pin carries it.
+horizon_handshake_hook = []
