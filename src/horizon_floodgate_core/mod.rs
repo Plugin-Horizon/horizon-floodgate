@@ -258,10 +258,23 @@ fn state(log: &dyn Fn(&str, &str)) -> &'static State {
                 DEFAULT_CONFIG.to_string()
             }
         };
-        let config = toml::from_str::<Config>(&text).unwrap_or_else(|e| {
+        let mut config = toml::from_str::<Config>(&text).unwrap_or_else(|e| {
             log("ERROR", &format!("[floodgate] {}: {e}; using the defaults", path.display()));
             Config::default()
         });
+        for line in prefix_warnings(&config.username_prefix) {
+            log("WARN", &format!("[floodgate] {line}"));
+        }
+        config.username_prefix = effective_prefix(&config.username_prefix);
+        if config.player_link.own() && config.player_link.kind != "sqlite" {
+            log(
+                "WARN",
+                &format!(
+                    "[floodgate] player-link type \"{}\" is not ported: own linking uses SQLite (config/floodgate/linked-players.db)",
+                    config.player_link.kind
+                ),
+            );
+        }
         let key_path = dir.join(&config.key_file_name);
         let key = match std::fs::read(&key_path).map_err(|e| e.to_string()).and_then(|b| Key::new(&b)) {
             Ok(key) => Some(key),
@@ -613,6 +626,60 @@ pub fn create_java_player_id(xuid: i64) -> u128 {
     u128::from(xuid as u64)
 }
 
+/// `FloodgateConfig.postInitialize`: a prefix of 16 characters or more cannot fit in a Java name, so it becomes `.`.
+pub fn effective_prefix(raw: &str) -> String {
+    if raw.chars().count() >= 16 {
+        ".".into()
+    } else {
+        raw.into()
+    }
+}
+
+/// `PostEnableMessages.registerPrefixMessages`: the warnings Floodgate logs about the username prefix, from the
+/// prefix as the config has it. The text is Floodgate's English (hard-coded in its source, not a translation).
+pub fn prefix_warnings(raw: &str) -> Vec<String> {
+    fn block(parts: &[String]) -> String {
+        let mut s = String::from("\n**********************************\n");
+        for part in parts {
+            s.push_str("* ");
+            s.push_str(part);
+            s.push('\n');
+        }
+        s.push_str("**********************************");
+        s
+    }
+    let recommend = "We strongly recommend using . as the prefix, but other alternatives that will not conflict include: +, - and *";
+    let len = raw.chars().count();
+    let mut out = Vec::new();
+    if raw.is_empty() {
+        out.push(block(&[
+            "You specified an empty prefix in your Floodgate config for Bedrock players!".into(),
+            "Should a Java player join and a Bedrock player join with the same username, unwanted results and conflicts will happen!".into(),
+            recommend.into(),
+        ]));
+    } else if len <= 16 && raw.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        // Floodgate's `Utils.isUniquePrefix` is false for a prefix that matches `^\w{0,16}$`.
+        out.push(block(&[
+            format!("The prefix you entered in your Floodgate config ({raw}) could lead to username conflicts!"),
+            format!("Should a Java player join with the username {raw}Notch, and a Bedrock player join as Notch (who will be given the name {raw}Notch), unwanted results will happen!"),
+            recommend.into(),
+        ]));
+    }
+    if len >= 16 {
+        out.push(block(&[
+            format!("The prefix you entered in your Floodgate config ({raw}) is longer than a Java username can be!"),
+            "Because of this, we reset the prefix to the default Floodgate prefix (.)".into(),
+        ]));
+    } else if len > 2 {
+        out.push(block(&[
+            format!("The prefix you entered in your Floodgate config ({raw}) is long! ({len} characters)"),
+            "A prefix is there to prevent username conflicts. However, a long prefix makes the chance of username conflicts higher.".into(),
+            recommend.into(),
+        ]));
+    }
+    out
+}
+
 /// The server's Floodgate config (read on first use).
 pub fn config() -> Config {
     state(&|level, line| eprintln!("[{level}] {line}"))
@@ -797,6 +864,39 @@ mod tests {
         let custom: Config = toml::from_str("username-prefix = \"*\"").unwrap();
         assert_eq!(custom.username_prefix, "*");
         assert_eq!(custom.key_file_name, "key.pem");
+    }
+
+    #[test]
+    fn prefix_of_sixteen_characters_is_reset() {
+        assert_eq!(effective_prefix("."), ".");
+        assert_eq!(effective_prefix("123456789012345"), "123456789012345");
+        assert_eq!(effective_prefix("1234567890123456"), ".");
+    }
+
+    #[test]
+    fn prefix_warnings_like_floodgate() {
+        assert!(prefix_warnings(".").is_empty());
+        assert!(prefix_warnings("+").is_empty());
+        let empty = prefix_warnings("");
+        assert_eq!(empty.len(), 1);
+        assert!(empty[0].contains("You specified an empty prefix"));
+        // Word characters only: not unique, and too short for the long-prefix warning.
+        let word = prefix_warnings("ab");
+        assert_eq!(word.len(), 1);
+        assert!(word[0].contains("could lead to username conflicts"));
+        assert!(word[0].contains("username abNotch"));
+        // Word characters and longer than two: both the conflict and the long-prefix warning.
+        let long = prefix_warnings("abcd");
+        assert_eq!(long.len(), 2);
+        assert!(long[1].contains("is long! (4 characters)"));
+        // Sixteen characters: conflict and reset.
+        let sixteen = prefix_warnings("1234567890123456");
+        assert_eq!(sixteen.len(), 2);
+        assert!(sixteen[1].contains("longer than a Java username can be"));
+        // A symbol prefix longer than two is only long.
+        let symbols = prefix_warnings("+++");
+        assert_eq!(symbols.len(), 1);
+        assert!(symbols[0].contains("is long! (3 characters)"));
     }
 
     fn frame(host: &str, intent: u8) -> Vec<u8> {
