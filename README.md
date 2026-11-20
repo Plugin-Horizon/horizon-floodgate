@@ -1,9 +1,22 @@
 # horizon-floodgate
 
+## Port status
+
+Compared with Floodgate 81b65cc (GeyserMC): **72 %** of the original's commands, permissions, config keys, messages and features work today; **86 %** once our open Horizon PRs are merged; **91 %** with the engine changes we are writing; **77 %** with the newest Horizon SDK. Counted on 31/43 items (see HMOD_PORT.md). Status: not yet compiled after the 2026-11-20 round.
+
 > **Unofficial Rust port of Floodgate for the Horizon server (https://github.com/arismoko/horizon). Not affiliated with or endorsed by the Floodgate authors.**
 
 The backend part of [Floodgate](https://github.com/GeyserMC/Floodgate) as a native mod for
 [Horizon](https://github.com/arismoko/horizon) servers. Not affiliated with GeyserMC or Floodgate.
+
+**Status on arismoko/horizon today:** the handshake is read through the `player_handshake` hook of
+horizon-rust/horizon#18724 (branch `hook-handshake`), which the SDK this mod is pinned to does not have yet. That code is
+behind the cargo feature `horizon_handshake_hook` (off by default). **Without the feature** no Bedrock player becomes a
+Floodgate player: no key check, no `invalid-key` kick, no forms, no linked-account lookup and no skin; what runs is the
+commands (`/floodgate`, `/linkaccount`, `/unlinkaccount`, `/fwhitelist`), the `floodgate:*` channel registration and
+`require-link` for Bedrock-looking UUIDs with own linking. **With the feature** (build against an SDK that carries the
+hook) the handshake is read, the host is cut back to the plain name, Floodgate players are registered, and Global
+Linking and `require-link` are decided at the login. The feature list below describes the full port.
 
 Bedrock players join a Java network through Geyser and a proxy that runs Floodgate. With
 `send-floodgate-data: true` the proxy puts each Bedrock player's data, encrypted with the proxy's Floodgate key,
@@ -24,13 +37,15 @@ into the handshake it sends the backend server. This mod is what Floodgate is on
   back parsed (closed, invalid, or the button/values), close a player's forms, send a transfer to another Bedrock
   server or a raw packet for Geyser. A player's forms are answered as closed when they leave. Payloads from players
   are refused as Floodgate refuses them (a non-Bedrock player, a packet or transfer from the client, a malformed
-  skin), with Floodgate's kick messages. Each player is sent `minecraft:register` with the four channels on join.
+  skin), with Floodgate's kick messages. The four channels are declared to the engine; the `minecraft:register`
+  message Floodgate sends on join is not sent (the engine refuses mods on `minecraft:`, see Known gaps).
 - Linking: a Bedrock player whose proxy sent no link is looked up at GeyserMC's Global Linking API (as Floodgate's
   `fetchLinkedPlayer`); `require-link` refuses Bedrock players without a link. As on Paper with proxy data, a link
   found on the backend goes into the player's Floodgate data only; the name and UUID stay the proxy's.
 - Commands: `/linkaccount <player> [code]` and `/unlinkaccount` (with Global Linking only they point to it, as
   Floodgate does without a database), `/floodgate` (everyone; the help lists what each may use) and
-  `/floodgate version` (operators). Permission nodes as Floodgate's `Permission` enum; `/fwhitelist` is not ported.
+  `/floodgate version` and `/floodgate firewall` (operators; the firewall check asks the Global API's health URL on a
+  thread). `/fwhitelist add|a|remove|r <player>` (operators) whitelists a Bedrock player by Floodgate UUID: it edits `whitelist.json` and runs `whitelist reload` (a name is looked up in the Global API on a thread). `/linkaccount` and `/unlinkaccount` print the own-database notice when Global Linking is on too, and a Java player who adds a code gets the usage line. The commands also work from the console (the link commands say they are for players). Permission nodes as Floodgate's `Permission` enum, `floodgate.news.receive` included.
 - API for other mods (`horizon_client::floodgate::...`): `player`, `is_floodgate_player`, `all_players`,
   `player_count`, `is_floodgate_id`, `create_java_player_id`, `send_form`, `close_form`, `send_transfer`,
   `send_packet`, `uploaded_skin`, `xuid_for`, `gamertag_for` (blocking calls to the Global API), and the form types in
@@ -88,8 +103,9 @@ horizon-launcher native-build <path to this folder> --server-output <dir> --vers
 
 What does not work yet on arismoko/horizon (each is marked `TODO(arismoko-api: ...)` in `src/lib.rs`):
 
-- The Floodgate handshake is not read, so a Bedrock player is not a Floodgate player yet: no key check, no forms.
-- Global Linking lookups are not done (a web request would block the tick), so `require-link` is not enforced with Global Linking on.
+- The Floodgate handshake needs the `player_handshake` hook (horizon-rust/horizon#18724); until the pinned SDK has it, build without the feature `horizon_handshake_hook` and a Bedrock player is not a Floodgate player yet: no key check, no forms.
+- Uploaded skins are not applied (no profile API); the `minecraft:register` message is not sent; no translations (English only); no metrics, no news feed.
+- Global Linking lookups run on a thread started at the handshake and are collected at the login (needs the hook feature above); without it `require-link` with Global Linking is not enforced.
 
 ## Licence
 

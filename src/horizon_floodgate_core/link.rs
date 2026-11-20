@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use crate::data::{parse_uuid, LinkedPlayer};
+use crate::horizon_floodgate_core::data::{parse_uuid, LinkedPlayer};
 
 /// `Constants.GET_BEDROCK_LINK`, `GET_XUID_URL`, `GET_GAMERTAG_URL`, `LINK_INFO_URL`.
 pub const GET_BEDROCK_LINK: &str = "https://api.geysermc.org/v2/link/bedrock/";

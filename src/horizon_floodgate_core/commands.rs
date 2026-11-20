@@ -3,13 +3,13 @@
 //! LICENSE). Floodgate's player-facing texts live in its translation files, which have no licence, so the
 //! wording of the translated lines below is the port's own; the structure and the decisions are Floodgate's.
 //!
-//! Not ported: `/fwhitelist` (Horizon has no helper to add a profile to the whitelist; see the README) and
-//! `/floodgate firewall`.
+//! `/fwhitelist` (`WhitelistCommand`) writes `whitelist.json` and has the server read it again (see `whitelist.rs`).
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::link::{LinkConfig, Linking, LINK_INFO_URL};
-use crate::store::{self, LinkError, Own};
+use crate::horizon_floodgate_core::link::{http_get, LinkConfig, Linking, LINK_INFO_URL};
+use crate::horizon_floodgate_core::store::{self, LinkError, Own};
 
 /// `floodgate.commands.global_linking_notice`.
 pub fn global_linking_notice() -> String {
@@ -17,6 +17,14 @@ pub fn global_linking_notice() -> String {
         "This server uses Global Linking. Link your Java and Bedrock accounts at {LINK_INFO_URL}"
     )
 }
+/// `floodgate.commands.local_linking_notice`: Global Linking and the own database are both on.
+pub fn local_linking_notice() -> String {
+    format!(
+        "This server also has its own linking database. Link here with the steps below, or link on all servers that use Global Linking at {LINK_INFO_URL}"
+    )
+}
+/// `LinkAccountCommand.Message.JAVA_USAGE`: a Java player starts the link, the code is entered on Bedrock.
+pub const JAVA_USAGE: &str = "Usage: /linkaccount <bedrock username> (the code is entered on the Bedrock account)";
 /// `floodgate.commands.linking_disabled`.
 pub const LINKING_DISABLED: &str = "Account linking is disabled on this server.";
 /// `floodgate.commands.not_a_player`.
@@ -29,6 +37,42 @@ pub struct Sender {
     pub level: u8,
     pub uuid: u128,
     pub name: String,
+}
+
+/// `Constants.HEALTH_URL`: what `/floodgate firewall` asks.
+pub const HEALTH_URL: &str = "https://api.geysermc.org/health";
+
+/// Lines a command answers after it returned (the firewall check waits for the network on its own
+/// thread): the recipient (`None` is the console) and the lines. The tick delivers them.
+static LATER: Mutex<Vec<(Option<u128>, Vec<String>)>> = Mutex::new(Vec::new());
+
+/// The answers that came in since the last call.
+pub fn take_later() -> Vec<(Option<u128>, Vec<String>)> {
+    std::mem::take(&mut *LATER.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// What `/floodgate firewall` says once the health request answered with `code` (-1 for none) and `body`.
+pub fn firewall_report(code: i32, body: &str) -> Vec<String> {
+    let ok = (200..300).contains(&code);
+    let mut lines = Vec::new();
+    if ok {
+        lines.push("\u{a7}aWas able to connect to global api!".to_string());
+    } else {
+        lines.push("\u{a7}cFailed to connect:".to_string());
+        lines.push(format!("Didn't receive an 'ok' http code. Got: {code}, response: {body}"));
+    }
+    lines.push(format!("\u{a7}eThe checks have finished. {}/1 were successful", u8::from(ok)));
+    lines
+}
+
+/// `/floodgate firewall`: the first line now, the rest from a thread (a web request must not stall the tick).
+fn start_firewall_check(to: Option<u128>) -> Vec<String> {
+    std::thread::spawn(move || {
+        let response = http_get(HEALTH_URL);
+        let lines = firewall_report(response.code, &response.body);
+        LATER.lock().unwrap_or_else(|e| e.into_inner()).push((to, lines));
+    });
+    vec!["\u{a7}eTesting global api...".to_string()]
 }
 
 /// What an own-linking command answers, and whether the sender is disconnected after it.
@@ -59,6 +103,10 @@ pub fn link_own(
 ) -> Reply {
     match bedrock {
         None => {
+            // A Java player gives the Bedrock name only; the code is for the Bedrock side.
+            if code.is_some() {
+                return say(JAVA_USAGE);
+            }
             let Some(target) = target else {
                 return say("Usage: /linkaccount <bedrock username>");
             };
@@ -113,7 +161,7 @@ pub fn unlink_own(own: &mut Own, sender: &Sender, bedrock: Option<(u128, String)
 
 /// The sender as a Bedrock player: their Floodgate id and Bedrock name.
 fn bedrock_of(sender: &Sender) -> Option<(u128, String)> {
-    crate::player(sender.uuid).map(|p| (p.java_uuid, p.data.username))
+    crate::horizon_floodgate_core::player(sender.uuid).map(|p| (p.java_uuid, p.data.username))
 }
 
 fn own_reply(sender: &Sender, words: &mut std::str::SplitWhitespace<'_>, link: bool, timeout: i64) -> Reply {
@@ -128,7 +176,7 @@ fn own_reply(sender: &Sender, words: &mut std::str::SplitWhitespace<'_>, link: b
     });
     let reply = done.unwrap_or_else(|e| say(format!("Linking is unavailable: {e}")));
     if let Some(reason) = &reply.kick {
-        crate::channels::kick(sender.uuid, reason);
+        crate::horizon_floodgate_core::channels::kick(sender.uuid, reason);
     }
     reply
 }
@@ -144,7 +192,13 @@ pub const OP_LEVEL: u8 = 1;
 pub fn usages(config: &LinkConfig) -> Vec<(&'static str, u8, Option<&'static str>)> {
     let mut u = vec![
         ("floodgate", 0, Some("floodgate.command.floodgate")),
+        ("floodgate firewall", OP_LEVEL, Some("floodgate.command.floodgate.firewall")),
         ("floodgate version", OP_LEVEL, Some("floodgate.command.floodgate.version")),
+        // WhitelistCommand: both words of each literal, the player is a name or a UUID.
+        ("fwhitelist add <player:word>", OP_LEVEL, Some("floodgate.command.fwhitelist")),
+        ("fwhitelist a <player:word>", OP_LEVEL, Some("floodgate.command.fwhitelist")),
+        ("fwhitelist remove <player:word>", OP_LEVEL, Some("floodgate.command.fwhitelist")),
+        ("fwhitelist r <player:word>", OP_LEVEL, Some("floodgate.command.fwhitelist")),
     ];
     if config.register_commands() {
         // LinkAccountCommand: `linkaccount <player>` with an optional `[code]` (a Bedrock player enters the code).
@@ -154,6 +208,52 @@ pub fn usages(config: &LinkConfig) -> Vec<(&'static str, u8, Option<&'static str
         ]);
     }
     u
+}
+
+/// `WhitelistCommand.performCommand`: a UUID or an online Bedrock player is written at once; a name is looked up
+/// in the Global API on a thread of its own and answered by the tick ([`take_later`]).
+fn whitelist_command(add: bool, input: &str, to: Option<u128>) -> Vec<String> {
+    use crate::horizon_floodgate_core::whitelist as wl;
+    let config = crate::horizon_floodgate_core::config();
+    let online = |name: &str| {
+        crate::horizon_floodgate_core::all_players()
+            .into_iter()
+            .find(|p| p.correct_username().eq_ignore_ascii_case(name) || p.java_username.eq_ignore_ascii_case(name))
+            .map(|p| p.java_uuid)
+    };
+    let path = std::path::Path::new(wl::FILE);
+    match wl::parse_target(input, &online) {
+        Err(_) => vec![wl::INVALID_USERNAME.into()],
+        Ok(wl::Target::Uuid(uuid)) => {
+            if !crate::horizon_floodgate_core::is_floodgate_id(uuid) {
+                return vec![wl::INVALID_USERNAME.into()];
+            }
+            match wl::apply(path, uuid, "unknown", add) {
+                Ok(changed) => vec![wl::result_line(add, changed, &crate::horizon_floodgate_core::data::uuid_string(uuid))],
+                Err(_) => vec![wl::UNEXPECTED_ERROR.into()],
+            }
+        }
+        Ok(wl::Target::Name(name)) => {
+            let Some((stripped, correct)) = wl::names(&name, &config.username_prefix, config.replace_spaces) else {
+                return vec![wl::INVALID_USERNAME.into()];
+            };
+            std::thread::spawn(move || {
+                let lines = match crate::horizon_floodgate_core::link::xuid_for(&stripped) {
+                    Err(_) => vec![wl::API_UNAVAILABLE.to_string()],
+                    Ok(None) => vec![wl::USER_NOT_FOUND.to_string()],
+                    Ok(Some(xuid)) => {
+                        let id = crate::horizon_floodgate_core::create_java_player_id(xuid);
+                        match wl::apply(std::path::Path::new(wl::FILE), id, &correct, add) {
+                            Ok(changed) => vec![wl::result_line(add, changed, &stripped)],
+                            Err(_) => vec![wl::UNEXPECTED_ERROR.to_string()],
+                        }
+                    }
+                };
+                LATER.lock().unwrap_or_else(|e| e.into_inner()).push((to, lines));
+            });
+            Vec::new()
+        }
+    }
 }
 
 /// The answer to a command line (without its slash), or `None` when it isn't one of Floodgate's.
@@ -167,7 +267,17 @@ pub fn run(line: &str, sender: Option<&Sender>, config: &LinkConfig) -> Option<V
             };
             if config.own() {
                 let link = name == "linkaccount";
-                return Some(own_reply(sender, &mut words, link, config.link_code_timeout).lines);
+                // `allowed = false`: LinkAccountCommand and UnlinkAccountCommand check `isEnabledAndAllowed()` after the notice.
+                let mut lines = if config.allowed {
+                    own_reply(sender, &mut words, link, config.link_code_timeout).lines
+                } else {
+                    vec![LINKING_DISABLED.into()]
+                };
+                // Both on: Floodgate says the own database is in use before it goes on (`LOCAL_LINKING_NOTICE`).
+                if config.linking() == Linking::Global {
+                    lines.insert(0, local_linking_notice());
+                }
+                return Some(lines);
             }
             // With only Global Linking (no database implementation) both commands just point there; without
             // any linking they say it is off. Floodgate goes on to its database only when it has one.
@@ -176,20 +286,39 @@ pub fn run(line: &str, sender: Option<&Sender>, config: &LinkConfig) -> Option<V
                 Linking::Disabled => LINKING_DISABLED.into(),
             }])
         }
+        "fwhitelist" => {
+            let level = sender.map_or(4, |s| s.level);
+            let (sub, target) = (words.next().map(str::to_ascii_lowercase), words.next());
+            let add = match sub.as_deref() {
+                Some("add" | "a") => true,
+                Some("remove" | "r") => false,
+                _ => return None,
+            };
+            let target = target?;
+            if level < OP_LEVEL {
+                return Some(vec![NO_PERMISSION.into()]);
+            }
+            Some(whitelist_command(add, target, sender.map(|s| s.uuid)))
+        }
         "floodgate" => {
             let level = sender.map_or(4, |s| s.level);
             match words.next().map(str::to_ascii_lowercase).as_deref() {
                 None => {
                     let mut help = String::from("Available subcommands are:\n");
                     if level >= OP_LEVEL {
+                        help.push_str(
+                            "\n\u{a7}bfirewall\u{a7}f - \u{a7}7Check if your outgoing firewall allows Floodgate to work properly",
+                        );
                         help.push_str("\n\u{a7}bversion\u{a7}f - \u{a7}7Displays version information about Floodgate");
                     }
                     Some(vec![help])
                 }
+                Some("firewall") if level >= OP_LEVEL => Some(start_firewall_check(sender.map(|s| s.uuid))),
+                Some("firewall") => Some(vec![NO_PERMISSION.into()]),
                 Some("version") if level >= OP_LEVEL => Some(vec![format!(
                     "\u{a7}7You're currently on \u{a7}bhorizon-floodgate {}\u{a7}7 (Floodgate data version {})",
                     env!("CARGO_PKG_VERSION"),
-                    crate::cipher::VERSION
+                    crate::horizon_floodgate_core::cipher::VERSION
                 )]),
                 Some("version") => Some(vec![NO_PERMISSION.into()]),
                 Some(_) => None,
@@ -234,10 +363,24 @@ mod tests {
         assert!(!usages(&off)
             .iter()
             .any(|(u, _, _)| u.starts_with("linkaccount")));
-        assert_eq!(usages(&c).len(), 4);
+        assert_eq!(usages(&c).len(), 9);
         assert!(usages(&c)
             .iter()
             .any(|(u, _, _)| *u == "linkaccount <player:player_name> [code:word]"));
+    }
+
+    #[test]
+    fn own_linking_with_allowed_off_says_disabled() {
+        let player = Sender { level: 0, uuid: 1, name: "Steve".into() };
+        let own_only = LinkConfig { enable_global_linking: false, enable_own_linking: true, allowed: false, ..LinkConfig::default() };
+        assert_eq!(run("linkaccount Alex", Some(&player), &own_only), Some(vec![LINKING_DISABLED.into()]));
+        assert_eq!(run("unlinkaccount", Some(&player), &own_only), Some(vec![LINKING_DISABLED.into()]));
+        // Both on: the own-database notice comes first, then the same answer.
+        let both = LinkConfig { enable_own_linking: true, allowed: false, ..LinkConfig::default() };
+        assert_eq!(
+            run("unlinkaccount", Some(&player), &both),
+            Some(vec![local_linking_notice(), LINKING_DISABLED.into()])
+        );
     }
 
     #[test]
@@ -255,8 +398,30 @@ mod tests {
             run("floodgate version", Some(&player), &c),
             Some(vec![NO_PERMISSION.into()])
         );
-        assert_eq!(run("floodgate firewall", Some(&op), &c), None);
+        assert_eq!(run("floodgate firewall", Some(&player), &c), Some(vec![NO_PERMISSION.into()]));
+        assert!(run("floodgate", Some(&op), &c).unwrap()[0].contains("\u{a7}bfirewall\u{a7}f - \u{a7}7Check if your outgoing"));
+        assert!(!run("floodgate", Some(&player), &c).unwrap()[0].contains("firewall"));
+        assert_eq!(run("floodgate bogus", Some(&op), &c), None);
         assert_eq!(run("gamemode 1", Some(&op), &c), None);
+    }
+
+    #[test]
+    fn firewall_report_lines() {
+        assert_eq!(
+            firewall_report(200, "{}"),
+            vec![
+                "\u{a7}aWas able to connect to global api!".to_string(),
+                "\u{a7}eThe checks have finished. 1/1 were successful".to_string()
+            ]
+        );
+        assert_eq!(
+            firewall_report(503, "down"),
+            vec![
+                "\u{a7}cFailed to connect:".to_string(),
+                "Didn't receive an 'ok' http code. Got: 503, response: down".to_string(),
+                "\u{a7}eThe checks have finished. 0/1 were successful".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -268,6 +433,8 @@ mod tests {
         let ten = Duration::from_secs(300);
         let r = link_own(&mut own, &java, None, None, None, now, ten);
         assert!(r.lines[0].starts_with("Usage"));
+        let r = link_own(&mut own, &java, None, Some("Steve"), Some("123456"), now, ten);
+        assert_eq!(r.lines, vec![JAVA_USAGE.to_string()]);
         let r = link_own(&mut own, &java, None, Some("Steve"), None, now, ten);
         let code = r.lines[0].split_whitespace().rev().nth(3).unwrap().to_string();
         assert!(r.lines[0].contains("/linkaccount Alex "), "{r:?}");
