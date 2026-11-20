@@ -26,7 +26,7 @@ use mod_api::{
     Command, CommandArgumentValue, CommandSource, Flow, Hooks, IPayloadContext, IPayloadHandler, PayloadBytes, PayloadHandleError, PayloadId, Registrar,
     RegistrationContext, PlayerCommandEvent, PlayerLoggedOutEvent, PlayerLoginEvent,
     NodeDefault, PermissionGatherNodesEvent, PermissionLevel, PermissionNode, PermissionValueType,
-    RegisterCommandsEvent, RunModCommandEvent, ServerAboutToStartEvent, ServerHost, ServerTickEvent,
+    RegisterCommandsEvent, RegisterNodeCommandsEvent, RunModCommandEvent, ServerAboutToStartEvent, ServerHost, ServerTickEvent,
     ServerTickPhase, Suggestion, TabCompleteEvent, Text,
 };
 
@@ -157,17 +157,22 @@ impl Hooks for Mod {
             // The player name is a `word` here: arismoko has no `player_name` argument kind, and the
             // core's `run` reads the name from the text anyway.
             let usage = usage.replace("<player:player_name>", "<player:word>");
-            let mut command = if level == 0 {
-                Command::new(&usage)
-            } else {
-                Command::op(&usage, level)
-            };
+            if node.is_some() {
+                continue; // the usage's node is registered by register_node_commands
+            }
+            event.commands.push(if level == 0 { Command::new(&usage) } else { Command::op(&usage, level) });
+        }
+    }
+
+    fn register_node_commands(&self, _: &mut dyn ServerHost, event: &mut RegisterNodeCommandsEvent<'_>) {
+        let config = fg::config();
+        for (usage, level, node) in usages(&config.player_link) {
+            let Some(node) = node else { continue };
+            let usage = usage.replace("<player:player_name>", "<player:word>");
             // The usage's Java node gates its literal path (the provider's answer, else the level):
             // `/floodgate` (everyone) and `/floodgate version` (operators) each keep their own.
-            if let Some(node) = node {
-                command = command.with_node(&perm_node(node));
-            }
-            event.commands.push(command);
+            let command = if level == 0 { Command::new(&usage) } else { Command::op(&usage, level) };
+            event.commands.push(command.with_node(&perm_node(node)));
         }
     }
 
