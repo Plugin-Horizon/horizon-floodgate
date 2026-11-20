@@ -197,14 +197,15 @@ impl Own {
                 r.java_name.eq_ignore_ascii_case(java_name) && r.bedrock_name.eq_ignore_ascii_case(bedrock_name)
             })
             .ok_or(LinkError::NoRequest)?;
-        if now.duration_since(self.requests[i].at) > timeout {
-            self.requests.remove(i);
-            return Err(LinkError::Expired);
-        }
+        // GeyserMC's SqliteDatabase.verifyLinkRequest: a wrong code keeps the request; the right code ends it, and
+        // an expired request that gets the right code is ended with REQUEST_EXPIRED.
         if self.requests[i].code != code {
             return Err(LinkError::WrongCode);
         }
         let r = self.requests.remove(i);
+        if now.duration_since(r.at) > timeout {
+            return Err(LinkError::Expired);
+        }
         let linked = LinkedPlayer {
             java_username: r.java_name,
             java_uuid: r.java_uuid,
@@ -296,6 +297,18 @@ mod tests {
             Err(LinkError::Expired)
         );
         assert_eq!(o.store.by_bedrock(99), Ok(None));
+    }
+
+    #[test]
+    fn a_wrong_code_on_an_expired_request_keeps_it() {
+        let mut o = own();
+        let t0 = Instant::now();
+        let ten = Duration::from_secs(10);
+        o.request(7, "Alex", "Steve", "1234".into(), t0);
+        let late = t0 + Duration::from_secs(11);
+        assert_eq!(o.complete("Alex", 99, "Steve", "0000", late, ten), Err(LinkError::WrongCode));
+        assert_eq!(o.complete("Alex", 99, "Steve", "1234", late, ten), Err(LinkError::Expired));
+        assert_eq!(o.complete("Alex", 99, "Steve", "1234", late, ten), Err(LinkError::NoRequest));
     }
 
     #[test]
